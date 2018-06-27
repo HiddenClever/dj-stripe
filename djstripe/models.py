@@ -2785,6 +2785,30 @@ class Product(StripeObject):
     ))
     unit_label = StripeCharField(max_length=12, null=True)
 
+    @classmethod
+    def get_or_create(cls, **kwargs):
+        """ Get or create a Product."""
+
+        try:
+            return Product.objects.get(stripe_id=kwargs['stripe_id']), False
+        except Product.DoesNotExist:
+            return cls.create(**kwargs), True
+
+    @classmethod
+    def create(cls, **kwargs):
+        # A few minor things are changed in the api-version of the create call
+        api_kwargs = dict(kwargs)
+        api_kwargs['id'] = api_kwargs['stripe_id']
+        del (api_kwargs['stripe_id'])
+        cls._api_create(**api_kwargs)
+
+        product = Product.objects.create(**kwargs)
+
+        return product
+
+    def __str__(self):
+        return self.name
+
     def __str__(self):
         return self.name
 
