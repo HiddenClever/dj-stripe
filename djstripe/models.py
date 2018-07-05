@@ -3156,7 +3156,7 @@ class Account(StripeObject):
     statement_descriptor = StripeCharField(max_length=255, default="", help_text=(
         "The default text that appears on credit card statements when a charge is made directly on the account"
     ))
-    support_email = StripeCharField(max_length=255, help_text=(
+    support_email = StripeCharField(max_length=255, stripe_required=False, help_text=(
         "A publicly shareable support email address for the business"
     ))
     support_phone = StripeCharField(max_length=255, help_text=(
