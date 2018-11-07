@@ -2002,6 +2002,27 @@ class Coupon(StripeObject):
     stripe_class = stripe.Coupon
     stripe_dashboard_item_name = "coupons"
 
+    @classmethod
+    def get_or_create(cls, **kwargs):
+        """ Get or create a Coupon."""
+
+        try:
+            return Coupon.objects.get(stripe_id=kwargs['stripe_id']), False
+        except Coupon.DoesNotExist:
+            return cls.create(**kwargs), True
+
+    @classmethod
+    def create(cls, **kwargs):
+        # A few minor things are changed in the api-version of the create call
+        api_kwargs = dict(kwargs)
+        api_kwargs['id'] = api_kwargs['stripe_id']
+        del (api_kwargs['stripe_id'])
+        cls._api_create(**api_kwargs)
+
+        coupon = Coupon.objects.create(**kwargs)
+
+        return coupon
+
     def __str__(self):
         return self.human_readable
 
