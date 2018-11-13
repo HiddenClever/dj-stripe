@@ -2017,7 +2017,8 @@ class Coupon(StripeObject):
         api_kwargs = dict(kwargs)
         api_kwargs['id'] = api_kwargs['stripe_id']
         del (api_kwargs['stripe_id'])
-        api_kwargs['amount_off'] = int(api_kwargs['amount_off'] * 100)
+        if 'amount_off' in api_kwargs:
+            api_kwargs['amount_off'] = int(api_kwargs['amount_off'] * 100)
         cls._api_create(**api_kwargs)
 
         coupon = Coupon.objects.create(**kwargs)
