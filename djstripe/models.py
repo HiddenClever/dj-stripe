@@ -914,7 +914,8 @@ class Customer(StripeObject):
 
     def subscribe(
         self, plan, charge_immediately=True, application_fee_percent=None, coupon=None,
-        quantity=None, metadata=None, tax_percent=None, trial_end=None
+        quantity=None, metadata=None, tax_percent=None, trial_end=None, trial_from_plan=None,
+        trial_period_days=None, billing_cycle_anchor=None
     ):
         """
         Subscribes this customer to a plan.
@@ -934,6 +935,10 @@ class Customer(StripeObject):
                                         application fee percentage.
         :type application_fee_percent: Decimal. Precision is 2; anything more will be ignored. A positive
                                        decimal between 1 and 100.
+        :param billing_cycle_anchor: A future timestamp to anchor the subscription’s billing cycle.
+                                     This is used to determine the date of the first full invoice, and, for plans
+                                     with months or year intervals, the day of the month for subsequent invoices.
+        :type billing_cycle_anchor: integer
         :param coupon: The code of the coupon to apply to this subscription. A coupon applied to a subscription
                        will only affect invoices created for that particular subscription.
         :type coupon: string
@@ -953,6 +958,14 @@ class Customer(StripeObject):
         :param charge_immediately: Whether or not to charge for the subscription upon creation. If False, an
                                    invoice will be created at the end of this period.
         :type charge_immediately: boolean
+        :param trial_from_plan: Indicates if a plan’s trial_period_days should be applied to the subscription.
+                                Setting trial_end per subscription is preferred, and this defaults to false.
+                                Setting this flag to true together with trial_end is not allowed.
+        :type trial_from_plan: boolean
+        :param trial_period_days: Integer representing the number of trial period days before the customer is
+                                  charged for the first time. This will always overwrite any trials that might
+                                  apply via a subscribed plan.
+        :type trial_period_days: integer
 
         .. Notes:
         .. ``charge_immediately`` is only available on ``Customer.subscribe()``
@@ -968,11 +981,14 @@ class Customer(StripeObject):
             plan=plan,
             customer=self.stripe_id,
             application_fee_percent=application_fee_percent,
+            billing_cycle_anchor=billing_cycle_anchor,
             coupon=coupon,
             quantity=quantity,
             metadata=metadata,
             tax_percent=tax_percent,
             trial_end=trial_end,
+            trial_from_plan=trial_from_plan,
+            trial_period_days=trial_period_days,
         )
 
         if charge_immediately:
@@ -2241,6 +2257,27 @@ class Invoice(StripeObject):
         return "Invoice #{number}".format(number=self.number or self.receipt_number or self.stripe_id)
 
     @classmethod
+    def _manipulate_stripe_object_hook(cls, data):
+        data = super(Invoice, cls)._manipulate_stripe_object_hook(data)
+        # fixup fields to maintain compatibility while avoiding a database migration on the stable branch
+
+        # deprecated in API 2018-11-08 - see https://stripe.com/docs/upgrades#2018-11-08
+        if "closed" not in data:
+            # https://stripe.com/docs/billing/invoices/migrating-new-invoice-states#autoadvance
+            if "auto_advance" in data:
+                data["closed"] = not data["auto_advance"]
+            else:
+                data["closed"] = False
+
+        if "forgiven" not in data:
+            if "status" in data:
+                data["forgiven"] = data["status"] == "uncollectible"
+            else:
+                data["forgiven"] = False
+
+        return data
+
+    @classmethod
     def _stripe_object_to_charge(cls, target_cls, data):
         """
         Search the given manager for the Charge matching this object's ``charge`` field.
@@ -2714,6 +2751,16 @@ class Plan(StripeObject):
         if product:
             self.product = product
 
+    @classmethod
+    def _manipulate_stripe_object_hook(cls, data):
+        data = super(Plan, cls)._manipulate_stripe_object_hook(data)
+        # Amount can be null if tiered plan
+        # Set to 0 to maintain compatibility while avoiding a database
+        # migration on the stable branch
+        if not data['amount']:
+            data['amount'] = 0
+        return data
+
     @property
     def amount_in_cents(self):
         return int(self.amount * 100)
@@ -2807,13 +2854,13 @@ class Product(StripeObject):
     ))
 
     # Fields available to `service` only
-    statement_descriptor = StripeCharField(max_length=22, null=True, help_text=(
+    statement_descriptor = StripeCharField(stripe_required=False, max_length=22, help_text=(
         "Extra information about a product which will appear on your customer's "
         "credit card statement. In the case that multiple products are billed at "
         "once, the first statement descriptor will be used. "
         "Only available on products of type=`service`."
     ))
-    unit_label = StripeCharField(max_length=12, null=True)
+    unit_label = StripeCharField(stripe_required=False, max_length=12)
 
     @classmethod
     def get_or_create(cls, **kwargs):
@@ -3031,7 +3078,7 @@ class Subscription(StripeObject):
 
         return self.update(prorate=False, trial_end=period_end)
 
-    def cancel(self, at_period_end=djstripe_settings.CANCELLATION_AT_PERIOD_END):
+    def cancel(self, at_period_end=None):
         """
         Cancels this subscription. If you set the at_period_end parameter to true, the subscription will remain active
         until the end of the period, at which point it will be canceled and not renewed. By default, the subscription
@@ -3054,25 +3101,32 @@ class Subscription(StripeObject):
         .. important:: If a subscription is cancelled during a trial period, the ``at_period_end`` flag will be \
         overridden to False so that the trial ends immediately and the customer's card isn't charged.
         """
+        if at_period_end is None:
+            at_period_end = djstripe_settings.CANCELLATION_AT_PERIOD_END
 
         # If plan has trial days and customer cancels before trial period ends, then end subscription now,
         #     i.e. at_period_end=False
         if self.trial_end and self.trial_end > timezone.now():
             at_period_end = False
 
-        try:
-            stripe_subscription = self._api_delete(at_period_end=at_period_end)
-        except InvalidRequestError as exc:
-            if "No such subscription:" in text_type(exc):
-                # cancel() works by deleting the subscription. The object still
-                # exists in Stripe however, and can still be retrieved.
-                # If the subscription was already canceled (status=canceled),
-                # that api_retrieve() call will fail with "No such subscription".
-                # However, this may also happen if the subscription legitimately
-                # does not exist, in which case the following line will re-raise.
-                stripe_subscription = self.api_retrieve()
-            else:
-                six.reraise(*sys.exc_info())
+        if at_period_end:
+            stripe_subscription = self.api_retrieve()
+            stripe_subscription.cancel_at_period_end = True
+            stripe_subscription.save()
+        else:
+            try:
+                stripe_subscription = self._api_delete()
+            except InvalidRequestError as exc:
+                if "No such subscription:" in text_type(exc):
+                    # cancel() works by deleting the subscription. The object still
+                    # exists in Stripe however, and can still be retrieved.
+                    # If the subscription was already canceled (status=canceled),
+                    # that api_retrieve() call will fail with "No such subscription".
+                    # However, this may also happen if the subscription legitimately
+                    # does not exist, in which case the following line will re-raise.
+                    stripe_subscription = self.api_retrieve()
+                else:
+                    six.reraise(*sys.exc_info())
 
         return Subscription.sync_from_stripe_data(stripe_subscription)
 
