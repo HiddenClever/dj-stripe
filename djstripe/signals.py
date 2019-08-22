@@ -69,6 +69,7 @@ WEBHOOK_SIGNALS = dict([
         "invoice.payment_failed",
         "invoice.payment_succeeded",
         "invoice.updated",
+        "invoice.upcoming",
         "invoiceitem.created",
         "invoiceitem.deleted",
         "invoiceitem.updated",
