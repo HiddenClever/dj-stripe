@@ -206,7 +206,11 @@ class TestCustomer(AssertStripeFksMixin, TestCase):
         djstripe_settings.SUBSCRIBER_CUSTOMER_KEY = "djstripe_subscriber"
 
         customer_mock.assert_called_once_with(
-            api_key=STRIPE_SECRET_KEY, email="", idempotency_key=None, metadata={}
+            api_key=STRIPE_SECRET_KEY,
+            email="",
+            idempotency_key=None,
+            metadata={},
+            stripe_account=None,
         )
 
         self.assertEqual(customer.metadata, None)
@@ -406,7 +410,10 @@ class TestCustomer(AssertStripeFksMixin, TestCase):
         self.assertTrue(get_user_model().objects.filter(pk=self.user.pk).exists())
 
         customer_retrieve_mock.assert_called_with(
-            id=self.customer.id, api_key=STRIPE_SECRET_KEY, expand=["default_source"]
+            id=self.customer.id,
+            api_key=STRIPE_SECRET_KEY,
+            expand=["default_source"],
+            stripe_account=None,
         )
         self.assertEqual(3, customer_retrieve_mock.call_count)
 
@@ -420,7 +427,10 @@ class TestCustomer(AssertStripeFksMixin, TestCase):
             self.customer.purge()
 
         customer_retrieve_mock.assert_called_once_with(
-            id=self.customer.id, api_key=STRIPE_SECRET_KEY, expand=["default_source"]
+            id=self.customer.id,
+            api_key=STRIPE_SECRET_KEY,
+            expand=["default_source"],
+            stripe_account=None,
         )
 
     def test_can_charge(self):
@@ -618,7 +628,10 @@ class TestCustomer(AssertStripeFksMixin, TestCase):
         self.assertEqual(self.customer.coupon, None)
         self.customer.add_coupon(FAKE_COUPON["id"])
         customer_retrieve_mock.assert_called_once_with(
-            api_key=STRIPE_SECRET_KEY, expand=["default_source"], id=FAKE_CUSTOMER["id"]
+            api_key=STRIPE_SECRET_KEY,
+            expand=["default_source"],
+            id=FAKE_CUSTOMER["id"],
+            stripe_account=None,
         )
 
     @patch("stripe.Coupon.retrieve", return_value=deepcopy(FAKE_COUPON), autospec=True)
@@ -644,7 +657,10 @@ class TestCustomer(AssertStripeFksMixin, TestCase):
             self.customer.add_coupon(coupon)
 
         customer_retrieve_mock.assert_called_once_with(
-            api_key=STRIPE_SECRET_KEY, expand=["default_source"], id=FAKE_CUSTOMER["id"]
+            api_key=STRIPE_SECRET_KEY,
+            expand=["default_source"],
+            id=FAKE_CUSTOMER["id"],
+            stripe_account=None,
         )
 
         self.customer.refresh_from_db()
@@ -1523,9 +1539,52 @@ class TestCustomer(AssertStripeFksMixin, TestCase):
         self.customer.subscribe(plan=plan, charge_immediately=False)
 
         self.assertEqual(2, self.customer.subscriptions.count())
+        self.assertEqual(2, len(self.customer.valid_subscriptions))
 
         with self.assertRaises(MultipleSubscriptionException):
             self.customer.subscription
+
+    @patch(
+        "stripe.Customer.retrieve", return_value=deepcopy(FAKE_CUSTOMER), autospec=True
+    )
+    @patch(
+        "stripe.Product.retrieve", return_value=deepcopy(FAKE_PRODUCT), autospec=True
+    )
+    def test_subscription_shortcut_with_invalid_subscriptions(
+        self, product_retrieve_mock, customer_retrieve_mock
+    ):
+        plan = Plan.sync_from_stripe_data(deepcopy(FAKE_PLAN))
+
+        self.assert_fks(plan, expected_blank_fks={})
+
+        fake_subscriptions = [
+            deepcopy(FAKE_SUBSCRIPTION),
+            deepcopy(FAKE_SUBSCRIPTION),
+            deepcopy(FAKE_SUBSCRIPTION),
+        ]
+
+        # update the status of all but one to be invalid,
+        # we need to also change the id for sync to work
+        fake_subscriptions[1]["status"] = "canceled"
+        fake_subscriptions[1]["id"] = fake_subscriptions[1]["id"] + "foo1"
+        fake_subscriptions[2]["status"] = "incomplete_expired"
+        fake_subscriptions[2]["id"] = fake_subscriptions[2]["id"] + "foo2"
+
+        for fake_subscription in fake_subscriptions:
+            with patch(
+                "stripe.Subscription.create",
+                autospec=True,
+                side_effect=[fake_subscription],
+            ):
+                self.customer.subscribe(plan=plan, charge_immediately=False)
+
+        self.assertEqual(3, self.customer.subscriptions.count())
+        self.assertEqual(1, len(self.customer.valid_subscriptions))
+        self.assertEqual(
+            self.customer.valid_subscriptions[0], self.customer.subscription
+        )
+
+        self.assertEqual(fake_subscriptions[0]["id"], self.customer.subscription.id)
 
     @patch("stripe.Subscription.create", autospec=True)
     @patch(
@@ -1714,7 +1773,7 @@ class TestCustomer(AssertStripeFksMixin, TestCase):
         self.assertIsNone(invoice.save())
 
         subscription_retrieve_mock.assert_called_once_with(
-            api_key=ANY, expand=ANY, id=FAKE_SUBSCRIPTION["id"]
+            api_key=ANY, expand=ANY, id=FAKE_SUBSCRIPTION["id"], stripe_account=None
         )
         plan_retrieve_mock.assert_not_called()
 

@@ -78,11 +78,11 @@ class Charge(StripeModel):
     expand_fields = ["balance_transaction"]
     stripe_dashboard_item_name = "payments"
 
-    amount = StripeDecimalCurrencyAmountField(help_text="Amount charged.")
+    amount = StripeDecimalCurrencyAmountField(help_text="Amount charged (as decimal).")
     amount_refunded = StripeDecimalCurrencyAmountField(
         help_text=(
-            "Amount refunded (can be less than the amount attribute on the charge "
-            "if a partial refund was issued)."
+            "Amount (as decimal) refunded (can be less than the amount attribute on "
+            "the charge if a partial refund was issued)."
         )
     )
     # TODO: application, application_fee
@@ -401,7 +401,8 @@ class Customer(StripeModel):
     address = JSONField(null=True, blank=True, help_text="The customer's address.")
     balance = StripeQuantumCurrencyAmountField(
         help_text=(
-            "Current balance, if any, being stored on the customer's account. "
+            "Current balance (in cents), if any, being stored on the customer's "
+            "account. "
             "If negative, the customer has credit to apply to the next invoice. "
             "If positive, the customer has an amount owed that will be added to the "
             "next invoice. The balance does not refer to any unpaid invoices; it "
@@ -537,7 +538,12 @@ class Customer(StripeModel):
         return data
 
     @classmethod
-    def get_or_create(cls, subscriber, livemode=djstripe_settings.STRIPE_LIVE_MODE):
+    def get_or_create(
+        cls,
+        subscriber,
+        livemode=djstripe_settings.STRIPE_LIVE_MODE,
+        stripe_account=None,
+    ):
         """
         Get or create a dj-stripe customer.
 
@@ -556,17 +562,27 @@ class Customer(StripeModel):
             idempotency_key = djstripe_settings.get_idempotency_key(
                 "customer", action, livemode
             )
-            return cls.create(subscriber, idempotency_key=idempotency_key), True
+            return (
+                cls.create(
+                    subscriber,
+                    idempotency_key=idempotency_key,
+                    stripe_account=stripe_account,
+                ),
+                True,
+            )
 
     @classmethod
-    def create(cls, subscriber, idempotency_key=None):
+    def create(cls, subscriber, idempotency_key=None, stripe_account=None):
         metadata = {}
         subscriber_key = djstripe_settings.SUBSCRIBER_CUSTOMER_KEY
         if subscriber_key not in ("", None):
             metadata[subscriber_key] = subscriber.pk
 
         stripe_customer = cls._api_create(
-            email=subscriber.email, idempotency_key=idempotency_key, metadata=metadata
+            email=subscriber.email,
+            idempotency_key=idempotency_key,
+            metadata=metadata,
+            stripe_account=stripe_account,
         )
         customer, created = Customer.objects.get_or_create(
             id=stripe_customer["id"],
@@ -732,7 +748,7 @@ class Customer(StripeModel):
 
         Parameters not implemented:
 
-        * **receipt_email** - Since this is a charge on a customer,
+        * **receipt_email** - Since this is a charge on a customer, \
         the customer's email address is used.
 
 
@@ -823,20 +839,20 @@ class Customer(StripeModel):
             and True for all other invoice items.
         :type discountable: boolean
         :param invoice: An existing invoice to add this invoice item to.
-            When left blank, the invoice item will be added to the next upcoming
-             scheduled invoice.
-             Use this when adding invoice items in response to an
-             ``invoice.created`` webhook. You cannot add an invoice
+            When left blank, the invoice item will be added to the next upcoming \
+             scheduled invoice. \
+             Use this when adding invoice items in response to an \
+             ``invoice.created`` webhook. You cannot add an invoice \
             item to an invoice that has already been paid, attempted or closed.
         :type invoice: Invoice or string (invoice ID)
         :param metadata: A set of key/value pairs useful for storing
             additional information.
         :type metadata: dict
         :param subscription: A subscription to add this invoice item to.
-            When left blank, the invoice item will be be added to the next upcoming
-            scheduled invoice. When set, scheduled invoices for subscriptions other
-            than the specified subscription will ignore the invoice item.
-            Use this when you want to express that an invoice item has been accrued
+            When left blank, the invoice item will be be added to the next upcoming \
+            scheduled invoice. When set, scheduled invoices for subscriptions other \
+            than the specified subscription will ignore the invoice item. \
+            Use this when you want to express that an invoice item has been accrued \
             within the context of a particular subscription.
         :type subscription: Subscription or string (subscription ID)
 
@@ -1053,9 +1069,14 @@ class Customer(StripeModel):
     def valid_subscriptions(self):
         """
         Returns this customer's valid subscriptions
-        (subscriptions that aren't cancelled).
+        (subscriptions that aren't canceled or incomplete_expired).
         """
-        return self.subscriptions.exclude(status=enums.SubscriptionStatus.canceled)
+        return self.subscriptions.exclude(
+            status__in=[
+                enums.SubscriptionStatus.canceled,
+                enums.SubscriptionStatus.incomplete_expired,
+            ]
+        )
 
     @property
     def subscription(self):
@@ -1255,7 +1276,8 @@ class Dispute(StripeModel):
 
     amount = StripeQuantumCurrencyAmountField(
         help_text=(
-            "Disputed amount. Usually the amount of the charge, but can differ "
+            "Disputed amount (in cents). Usually the amount of the charge, "
+            "but can differ "
             "(usually because of currency fluctuation or because only part of "
             "the order is disputed)."
         )
@@ -1428,13 +1450,13 @@ class PaymentIntent(StripeModel):
     stripe_dashboard_item_name = "payments"
 
     amount = StripeQuantumCurrencyAmountField(
-        help_text="Amount intended to be collected by this PaymentIntent."
+        help_text="Amount (in cents) intended to be collected by this PaymentIntent."
     )
     amount_capturable = StripeQuantumCurrencyAmountField(
-        help_text="Amount that can be captured from this PaymentIntent."
+        help_text="Amount (in cents) that can be captured from this PaymentIntent."
     )
     amount_received = StripeQuantumCurrencyAmountField(
-        help_text="Amount that was collected by this PaymentIntent."
+        help_text="Amount (in cents) that was collected by this PaymentIntent."
     )
     # application
     # application_fee_amount
@@ -1739,7 +1761,8 @@ class Payout(StripeModel):
     stripe_dashboard_item_name = "payouts"
 
     amount = StripeDecimalCurrencyAmountField(
-        help_text="Amount to be transferred to your bank account or debit card."
+        help_text="Amount (as decimal) to be transferred to your bank account or "
+        "debit card."
     )
     arrival_date = StripeDateTimeField(
         help_text=(

@@ -3,6 +3,29 @@
 History
 =======
 
+2.1.1 (2019-10-01)
+------------------
+
+This is a bugfix-only version:
+
+- Updated webhook signals list (#1000).
+- Fixed issue syncing PaymentIntent with destination charge (#960).
+- Fixed ``Customer.subscription`` & ``.valid_subscriptions()`` to ignore ``status=incomplete_expired`` (#1006).
+- Fixed error on ``paymentmethod.detached`` event with ``card_xxx`` payment methods (#967).
+- Added ``PaymentMethod.detach()`` (#943).
+- Updated ``help_text`` on all currency fields to make it clear if they're holding integer cents
+  (``StripeQuantumCurrencyAmountField``) or decimal dollar (or euro, pound etc) (``StripeDecimalCurrencyAmountField``) (#999)
+- Documented our preferred Django model field types (#986)
+
+Upcoming migration of currency fields (storage as cents instead of dollars)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Please be aware that we're looking at standardising our currency storage fields
+as integer quanta (cents) instead of Decimal (dollar) values, to match stripe.
+
+This is intended to be part of the 3.0 release, since it will involve some breaking
+changes.  See #955 for details and discussion.
+
 2.1.0 (2019-09-12)
 ------------------
 
@@ -624,7 +647,7 @@ Other changes
 * CancelSubscriptionView redirect is now more flexible (Thanks @jleclanche) #418
 * Customer.sync_cards() (Thanks @jleclanche) #438
 * Many stability fixes, bugfixes, and code cleanup (Thanks @jleclanche)
-* Support syncing cancelled subscriptions (Thanks @jleclanche) #443
+* Support syncing canceled subscriptions (Thanks @jleclanche) #443
 * Improved admin interface (Thanks @jleclanche with @jameshiew) #451
 * Support concurrent TEST + LIVE API keys (Fix webhook event processing for both modes) (Thanks @jleclanche) #461
 * Added Stripe Dashboard link to admin change panel (Thanks @jleclanche) #465
@@ -705,7 +728,7 @@ Other changes
 * Fixed create a token call in change_card.html (Thanks @dollydagr)
 * Fix ``charge.dispute.closed`` typo. (Thanks @ipmb)
 * Fix contributing docs formatting. (Thanks @audreyr)
-* Fix subscription cancelled_at_period_end field sync on plan upgrade (Thanks @nigma)
+* Fix subscription canceled_at_period_end field sync on plan upgrade (Thanks @nigma)
 * Remove "account" bug in Middleware (Thanks @sromero84)
 * Fix correct plan selection on subscription in subscribe_form template. (Thanks Yasmine Charif)
 * Fix subscription status in account, _subscription_status, and cancel_subscription templates. (Thanks Yasmine Charif)

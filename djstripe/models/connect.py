@@ -351,6 +351,29 @@ class Account(StripeModel):
 
         return data
 
+    @classmethod
+    def _create_from_stripe_object(
+        cls,
+        data,
+        current_ids=None,
+        pending_relations=None,
+        save=True,
+        stripe_account=None,
+    ):
+        """
+        Set the stripe_account to the id of the Account instance being created.
+
+        This ensures that the foreign-key relations that may exist in stripe are
+        fetched using the appropriate connected account ID.
+        """
+        return super()._create_from_stripe_object(
+            data=data,
+            current_ids=current_ids,
+            pending_relations=pending_relations,
+            save=save,
+            stripe_account=data["id"] if not stripe_account else stripe_account,
+        )
+
 
 class ApplicationFee(StripeModel):
     """
@@ -362,9 +385,9 @@ class ApplicationFee(StripeModel):
 
     stripe_class = stripe.ApplicationFee
 
-    amount = StripeQuantumCurrencyAmountField(help_text="Amount earned.")
+    amount = StripeQuantumCurrencyAmountField(help_text="Amount earned, in cents.")
     amount_refunded = StripeQuantumCurrencyAmountField(
-        help_text="Amount refunded (can be less than the amount attribute "
+        help_text="Amount in cents refunded (can be less than the amount attribute "
         "on the fee if a partial refund was issued)"
     )
     # TODO application = ...
@@ -401,7 +424,7 @@ class ApplicationFeeRefund(StripeModel):
 
     description = None
 
-    amount = StripeQuantumCurrencyAmountField(help_text="Amount refunded.")
+    amount = StripeQuantumCurrencyAmountField(help_text="Amount refunded, in cents.")
     balance_transaction = models.ForeignKey(
         "BalanceTransaction",
         on_delete=models.CASCADE,
@@ -479,8 +502,8 @@ class Transfer(StripeModel):
     amount_reversed = StripeDecimalCurrencyAmountField(
         null=True,
         blank=True,
-        help_text="The amount reversed (can be less than the amount attribute on the"
-        " transfer if a partial reversal was issued).",
+        help_text="The amount (as decimal) reversed (can be less than the amount "
+        "attribute on the transfer if a partial reversal was issued).",
     )
     balance_transaction = models.ForeignKey(
         "BalanceTransaction",

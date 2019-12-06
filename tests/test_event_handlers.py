@@ -3,10 +3,11 @@ dj-stripe Event Handler tests
 """
 import decimal
 from copy import deepcopy
-from unittest.mock import patch
+from unittest.mock import ANY, call, patch
 
 from django.contrib.auth import get_user_model
 from django.test import TestCase
+from stripe.error import InvalidRequestError
 
 from djstripe.models import (
     Card,
@@ -25,6 +26,7 @@ from djstripe.models import (
 )
 
 from . import (
+    FAKE_ACCOUNT,
     FAKE_BALANCE_TRANSACTION,
     FAKE_CARD,
     FAKE_CARD_AS_PAYMENT_METHOD,
@@ -35,6 +37,8 @@ from . import (
     FAKE_CUSTOMER_II,
     FAKE_DISPUTE,
     FAKE_EVENT_ACCOUNT_APPLICATION_DEAUTHORIZED,
+    FAKE_EVENT_CARD_PAYMENT_METHOD_ATTACHED,
+    FAKE_EVENT_CARD_PAYMENT_METHOD_DETACHED,
     FAKE_EVENT_CHARGE_SUCCEEDED,
     FAKE_EVENT_CUSTOMER_CREATED,
     FAKE_EVENT_CUSTOMER_DELETED,
@@ -51,16 +55,22 @@ from . import (
     FAKE_EVENT_INVOICE_UPCOMING,
     FAKE_EVENT_INVOICEITEM_CREATED,
     FAKE_EVENT_INVOICEITEM_DELETED,
+    FAKE_EVENT_PAYMENT_INTENT_SUCCEEDED_DESTINATION_CHARGE,
     FAKE_EVENT_PAYMENT_METHOD_ATTACHED,
+    FAKE_EVENT_PAYMENT_METHOD_DETACHED,
     FAKE_EVENT_PLAN_CREATED,
     FAKE_EVENT_PLAN_DELETED,
     FAKE_EVENT_PLAN_REQUEST_IS_OBJECT,
     FAKE_EVENT_TRANSFER_CREATED,
     FAKE_EVENT_TRANSFER_DELETED,
+    FAKE_FILEUPLOAD_ICON,
+    FAKE_FILEUPLOAD_LOGO,
     FAKE_INVOICE,
     FAKE_INVOICE_II,
     FAKE_INVOICEITEM,
+    FAKE_PAYMENT_INTENT_DESTINATION_CHARGE,
     FAKE_PAYMENT_INTENT_I,
+    FAKE_PAYMENT_METHOD_I,
     FAKE_PLAN,
     FAKE_PRODUCT,
     FAKE_SUBSCRIPTION,
@@ -796,6 +806,88 @@ class TestPaymentMethodEvents(AssertStripeFksMixin, EventTestCase):
             },
         )
 
+    @patch("stripe.PaymentMethod.retrieve", autospec=True)
+    @patch("stripe.Event.retrieve", autospec=True)
+    def test_card_payment_method_attached(
+        self, event_retrieve_mock, payment_method_retrieve_mock
+    ):
+        # Attach of a legacy id="card_xxx" payment method should behave exactly
+        # as per a normal "native" id="pm_yyy" payment_method.
+        fake_stripe_event = deepcopy(FAKE_EVENT_CARD_PAYMENT_METHOD_ATTACHED)
+        event_retrieve_mock.return_value = fake_stripe_event
+        payment_method_retrieve_mock.return_value = fake_stripe_event["data"]["object"]
+
+        event = Event.sync_from_stripe_data(fake_stripe_event)
+        event.invoke_webhook_handlers()
+
+        payment_method = PaymentMethod.objects.get(
+            id=fake_stripe_event["data"]["object"]["id"]
+        )
+
+        self.assert_fks(
+            payment_method,
+            expected_blank_fks={
+                "djstripe.Customer.coupon",
+                "djstripe.Customer.default_payment_method",
+            },
+        )
+
+    @patch("stripe.PaymentMethod.retrieve", autospec=True)
+    @patch("stripe.Event.retrieve", autospec=True)
+    def test_payment_method_detached(
+        self, event_retrieve_mock, payment_method_retrieve_mock
+    ):
+        fake_stripe_event = deepcopy(FAKE_EVENT_PAYMENT_METHOD_DETACHED)
+        event_retrieve_mock.return_value = fake_stripe_event
+        payment_method_retrieve_mock.return_value = fake_stripe_event["data"]["object"]
+
+        event = Event.sync_from_stripe_data(fake_stripe_event)
+        event.invoke_webhook_handlers()
+
+        payment_method = PaymentMethod.objects.get(
+            id=fake_stripe_event["data"]["object"]["id"]
+        )
+
+        self.assertIsNone(
+            payment_method.customer,
+            "Detach of a payment_method should set customer to null",
+        )
+
+        self.assert_fks(
+            payment_method, expected_blank_fks={"djstripe.PaymentMethod.customer"}
+        )
+
+    @patch(
+        "stripe.PaymentMethod.retrieve",
+        side_effect=InvalidRequestError(
+            message="No such payment_method: card_xxxx",
+            param="payment_method",
+            code="resource_missing",
+        ),
+        autospec=True,
+    )
+    @patch("stripe.Event.retrieve", autospec=True)
+    def test_card_payment_method_detached(
+        self, event_retrieve_mock, payment_method_retrieve_mock
+    ):
+        # Detach of a legacy id="card_xxx" payment method is handled specially,
+        # since the card is deleted by Stripe and therefore PaymetMethod.retrieve fails
+
+        fake_stripe_event = deepcopy(FAKE_EVENT_CARD_PAYMENT_METHOD_DETACHED)
+        event_retrieve_mock.return_value = fake_stripe_event
+        payment_method_retrieve_mock.return_value = fake_stripe_event["data"]["object"]
+
+        event = Event.sync_from_stripe_data(fake_stripe_event)
+        event.invoke_webhook_handlers()
+
+        self.assertEqual(
+            PaymentMethod.objects.filter(
+                id=fake_stripe_event["data"]["object"]["id"]
+            ).count(),
+            0,
+            "Detach of a 'card_' payment_method should delete it",
+        )
+
 
 class TestTransferEvents(EventTestCase):
     @patch("stripe.Transfer.retrieve", autospec=True)
@@ -829,3 +921,66 @@ class TestTransferEvents(EventTestCase):
 
         event = self._create_event(FAKE_EVENT_TRANSFER_DELETED)
         event.invoke_webhook_handlers()
+
+
+class TestPaymentIntentEvents(EventTestCase):
+    """Test case for payment intent event handling."""
+
+    @patch(
+        "stripe.Customer.retrieve", return_value=deepcopy(FAKE_CUSTOMER), autospec=True
+    )
+    @patch(
+        "stripe.Account.retrieve",
+        return_value=deepcopy(FAKE_ACCOUNT),
+        autospec=IS_STATICMETHOD_AUTOSPEC_SUPPORTED,
+    )
+    @patch(
+        "stripe.FileUpload.retrieve",
+        side_effect=(deepcopy(FAKE_FILEUPLOAD_ICON), deepcopy(FAKE_FILEUPLOAD_LOGO)),
+        autospec=True,
+    )
+    @patch(
+        "stripe.PaymentIntent.retrieve",
+        return_value=deepcopy(FAKE_PAYMENT_INTENT_DESTINATION_CHARGE),
+        autospec=True,
+    )
+    @patch(
+        "stripe.PaymentMethod.retrieve",
+        return_value=deepcopy(FAKE_PAYMENT_METHOD_I),
+        autospec=True,
+    )
+    def test_payment_intent_succeeded_with_destination_charge(
+        self,
+        customer_retrieve_mock,
+        account_retrieve_mock,
+        file_upload_retrieve_mock,
+        payment_intent_retrieve_mock,
+        payment_method_retrieve_mock,
+    ):
+        """Test that the payment intent succeeded event can create all related objects.
+
+        This should exercise the machinery to set `stripe_account` when recursing into
+        objects related to a connect `Account`.
+        """
+        event = self._create_event(
+            FAKE_EVENT_PAYMENT_INTENT_SUCCEEDED_DESTINATION_CHARGE
+        )
+        event.invoke_webhook_handlers()
+
+        # Make sure the file uploads were retrieved using the account ID.
+        file_upload_retrieve_mock.assert_has_calls(
+            (
+                call(
+                    id=FAKE_FILEUPLOAD_ICON["id"],
+                    api_key=ANY,
+                    expand=ANY,
+                    stripe_account=FAKE_ACCOUNT["id"],
+                ),
+                call(
+                    id=FAKE_FILEUPLOAD_LOGO["id"],
+                    api_key=ANY,
+                    expand=ANY,
+                    stripe_account=FAKE_ACCOUNT["id"],
+                ),
+            )
+        )
