@@ -878,7 +878,7 @@ class Plan(StripeModel):
         ordering = ["amount"]
 
     def __str__(self):
-        return self.name or self.nickname or self.id
+        return f"{self.product} - {self.name or self.nickname or self.id}"
 
     @property
     def amount_in_cents(self):
