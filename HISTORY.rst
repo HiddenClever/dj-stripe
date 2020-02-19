@@ -3,6 +3,91 @@
 History
 =======
 
+2.2.2 (2020-01-20)
+------------------
+
+This is a bugfix-only version:
+
+- Fixed handling of ``TaxRate`` events (#1094).
+
+2.2.1 (2020-01-14)
+------------------
+
+This is a bugfix-only version:
+
+- Fixed bad package build.
+
+2.2.0 (2020-01-13)
+------------------
+
+- Changed ``JSONField`` dependency package from `jsonfield`_ to `jsonfield2`_, for Django 3 compatibility (see `Warning about safe uninstall of jsonfield on upgrade`_). Note that Django 2.1 requires jsonfield<3.1.
+- Added support for Django 3.0 (requires jsonfield2>=3.0.3).
+- Added support for python 3.8.
+- Refactored ``UpcomingInvoice``, so it's no longer a subclass of ``Invoice`` (to allow ``Invoice`` to use ``ManyToManyFields``).
+- Dropped previously-deprecated ``Account`` fields (see https://stripe.com/docs/upgrades#2019-02-19 ):
+    - ``.business_name``
+    - ``.business_primary_color``
+    - ``.business_url`` (changed to a property)
+    - ``.debit_negative_balances``
+    - ``.decline_charge_on``
+    - ``.display_name``
+    - ``.legal_entity``
+    - ``.payout_schedule``
+    - ``.payout_statement_descriptor``
+    - ``.statement_descriptor``
+    - ``.support_email``
+    - ``.support_phone``
+    - ``.support_url``
+    - ``.timezone``
+    - ``.verification``
+- Dropped previously-deprecated ``Account.business_logo`` property (renamed to ``.branding_icon``)
+- Dropped previously-deprecated ``Customer.account_balance`` property (renamed to ``.balance``)
+- Dropped previously-deprecated properties ``Invoice.application_fee``, ``Invoice.date``
+- Dropped previously-deprecated enum ``PaymentMethodType`` (use ``DjstripePaymentMethodType`` instead)
+- Renamed ``Invoice.billing`` to ``.collection_method`` (added deprecated property for the old name).
+- Updated ``Invoice`` model to add missing fields.
+- Added ``TaxRate`` model, and ``Invoice.default_tax_rates``, ``InvoiceItem.tax_rates``,
+  ``Invoice.total_tax_amounts``, ``Subscription.default_tax_rates``, ``SubscriptionItem.tax_rates`` (#1027).
+- Change urls.py to use the new style urls.
+- Update forward relation fields in the admin to be raw id fields.
+- Updated ``StripeQuantumCurrencyAmountField`` and ``StripeDecimalCurrencyAmountField`` to support Stripe Large Charges (#1045).
+- Update event handling so ``customer.subscription.deleted`` updates subscriptions to ``status="canceled"`` instead of
+  deleting it from our database,  to match Stripe's behaviour (#599).
+- Added missing ``Refund.reason`` value, increases field width (#1075).
+- Fixed ``Refund.status`` definition, reduces field width (#1076).
+- Deprecated non-standard ``Invoice.status`` (renamed to ``Invoice.legacy_status``) to make way for the Stripe field (preparation for #1020).
+
+Warning about safe uninstall of jsonfield on upgrade
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+.. warning::
+
+    Both **jsonfield** and **jsonfield2** use the same import path, so if upgrading to dj-stripe>=2.2
+    in an existing virtualenv, sure to uninstall jsonfield first.  eg::
+
+        # ensure jsonfield is uninstalled before we install jsonfield2
+        pip uninstall jsonfield -y && pip install "dj-stripe>=2.2.0dev"
+
+
+    Otherwise, ``pip uninstall jsonfield`` will remove jsonfield2’s ``jsonfield``
+    module from ``site-packages``, which would cause errors like ``ImportError: cannot import name 'JSONField' from 'jsonfield' (unknown location)``
+
+    If you have hit this ImportError already after upgrading, running this should resolve it::
+
+        # remove both jsonfield packages before reinstall to fix ImportError:
+        pip uninstall jsonfield jsonfield2 -y && pip install "dj-stripe>=2.2.0dev"
+
+.. _jsonfield: https://github.com/dmkoch/django-jsonfield/
+.. _jsonfield2: https://github.com/rpkilby/jsonfield2/
+
+Note on usage of Stripe Elements JS
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+See https://dj-stripe.readthedocs.io/en/latest/stripe_elements_js.html for notes about
+usage of the Stripe Elements frontend JS library.
+
+TLDR: if you haven't yet migrated to PaymentIntents, prefer ``stripe.createSource()`` to ``stripe.createToken()``.
+
+
 2.1.1 (2019-10-01)
 ------------------
 

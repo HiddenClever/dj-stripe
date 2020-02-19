@@ -38,9 +38,10 @@
                 "created": 1562801159,
                 "currency": "usd",
                 "customer": "cus_6lsBvm5rJ0zyHc",
-                "description": "Invoice 7759B3BE-0001",
+                "description": "Subscription creation",
                 "destination": null,
                 "dispute": null,
+                "disputed": false,
                 "failure_code": null,
                 "failure_message": null,
                 "fraud_details": {},
@@ -75,7 +76,9 @@
                         "exp_year": 2020,
                         "fingerprint": "XBb4pv4IRQeImoJN",
                         "funding": "credit",
+                        "installments": null,
                         "last4": "4242",
+                        "network": "visa",
                         "three_d_secure": null,
                         "wallet": null
                     },
@@ -130,7 +133,7 @@
     "created": 1562801159,
     "currency": "usd",
     "customer": "cus_6lsBvm5rJ0zyHc",
-    "description": "Invoice 7759B3BE-0001",
+    "description": "Subscription creation",
     "invoice": "in_fakefakefakefakefake0001",
     "last_payment_error": null,
     "livemode": false,
@@ -142,6 +145,7 @@
     "payment_method": null,
     "payment_method_options": {
         "card": {
+            "installments": null,
             "request_three_d_secure": "automatic"
         }
     },

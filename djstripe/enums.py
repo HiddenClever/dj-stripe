@@ -311,9 +311,23 @@ class FileUploadType(Enum):
     docx = _("DOCX")
 
 
-class InvoiceBilling(Enum):
+class InvoiceBillingReason(Enum):
+    subscription_cycle = _("Subscription cycle")
+    subscription_create = _("Subscription create")
+    subscription_update = _("Subscription update")
+    subscription = _("Subscription")
+    manual = _("Manual")
+    upcoming = _("Upcoming")
+    subscription_threshold = _("Subscription threshold")
+
+
+class InvoiceCollectionMethod(Enum):
     charge_automatically = _("Charge automatically")
     send_invoice = _("Send invoice")
+
+
+# deprecated, will be removed in 2.3
+InvoiceBilling = InvoiceCollectionMethod
 
 
 class IntentUsage(Enum):
@@ -521,6 +535,7 @@ class RefundReason(Enum):
     duplicate = _("Duplicate charge")
     fraudulent = _("Fraudulent")
     requested_by_customer = _("Requested by customer")
+    expired_uncaptured_charge = _("Expired uncaptured charge")
 
 
 class RefundStatus(Enum):
@@ -590,7 +605,3 @@ class DjstripePaymentMethodType(Enum):
     card = _("Card")
     bank_account = _("Bank account")
     source = _("Source")
-
-
-# Alias (Deprecated, remove in 2.2.0)
-PaymentMethodType = DjstripePaymentMethodType

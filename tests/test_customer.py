@@ -94,16 +94,10 @@ class TestCustomer(AssertStripeFksMixin, TestCase):
         self.assertEqual(self.customer.credits, 0)
         self.assertEqual(self.customer.pending_charges, 1000)
 
-        with self.assertWarns(DeprecationWarning):
-            self.assertEqual(self.customer.balance, self.customer.account_balance)
-
         self.customer.balance = -1000
         self.assertEqual(self.customer.balance, -1000)
         self.assertEqual(self.customer.credits, 1000)
         self.assertEqual(self.customer.pending_charges, 0)
-
-        with self.assertWarns(DeprecationWarning):
-            self.assertEqual(self.customer.balance, self.customer.account_balance)
 
     def test_customer_dashboard_url(self):
         expected_url = "https://dashboard.stripe.com/test/customers/{}".format(
@@ -718,6 +712,7 @@ class TestCustomer(AssertStripeFksMixin, TestCase):
                 "djstripe.Account.branding_icon",
                 "djstripe.Charge.dispute",
                 "djstripe.Charge.latest_invoice (related name)",
+                "djstripe.Charge.latest_upcominginvoice (related name)",
                 "djstripe.Charge.invoice",
                 "djstripe.Charge.transfer",
                 "djstripe.Customer.coupon",
@@ -725,6 +720,7 @@ class TestCustomer(AssertStripeFksMixin, TestCase):
                 "djstripe.PaymentIntent.invoice (related name)",
                 "djstripe.PaymentIntent.on_behalf_of",
                 "djstripe.PaymentIntent.payment_method",
+                "djstripe.PaymentIntent.upcominginvoice (related name)",
             },
         )
 
@@ -745,6 +741,7 @@ class TestCustomer(AssertStripeFksMixin, TestCase):
                 "djstripe.Account.branding_icon",
                 "djstripe.Charge.dispute",
                 "djstripe.Charge.latest_invoice (related name)",
+                "djstripe.Charge.latest_upcominginvoice (related name)",
                 "djstripe.Charge.invoice",
                 "djstripe.Charge.transfer",
                 "djstripe.Customer.coupon",
@@ -752,6 +749,7 @@ class TestCustomer(AssertStripeFksMixin, TestCase):
                 "djstripe.PaymentIntent.invoice (related name)",
                 "djstripe.PaymentIntent.on_behalf_of",
                 "djstripe.PaymentIntent.payment_method",
+                "djstripe.PaymentIntent.upcominginvoice (related name)",
             },
         )
 
@@ -803,6 +801,7 @@ class TestCustomer(AssertStripeFksMixin, TestCase):
                 "djstripe.Account.branding_icon",
                 "djstripe.Charge.dispute",
                 "djstripe.Charge.latest_invoice (related name)",
+                "djstripe.Charge.latest_upcominginvoice (related name)",
                 "djstripe.Charge.invoice",
                 "djstripe.Charge.transfer",
                 "djstripe.Customer.coupon",
@@ -810,6 +809,7 @@ class TestCustomer(AssertStripeFksMixin, TestCase):
                 "djstripe.PaymentIntent.invoice (related name)",
                 "djstripe.PaymentIntent.on_behalf_of",
                 "djstripe.PaymentIntent.payment_method",
+                "djstripe.PaymentIntent.upcominginvoice (related name)",
             },
         )
 
@@ -824,6 +824,7 @@ class TestCustomer(AssertStripeFksMixin, TestCase):
                 "djstripe.Account.branding_icon",
                 "djstripe.Charge.dispute",
                 "djstripe.Charge.latest_invoice (related name)",
+                "djstripe.Charge.latest_upcominginvoice (related name)",
                 "djstripe.Charge.invoice",
                 "djstripe.Charge.transfer",
                 "djstripe.Customer.coupon",
@@ -831,6 +832,7 @@ class TestCustomer(AssertStripeFksMixin, TestCase):
                 "djstripe.PaymentIntent.invoice (related name)",
                 "djstripe.PaymentIntent.on_behalf_of",
                 "djstripe.PaymentIntent.payment_method",
+                "djstripe.PaymentIntent.upcominginvoice (related name)",
             },
         )
 

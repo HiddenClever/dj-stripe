@@ -25,6 +25,62 @@ from ..utils import QuerySetMock, get_friendly_currency_amount
 from .base import StripeModel
 
 
+class DjstripeInvoiceTotalTaxAmount(models.Model):
+    """
+    An internal model that holds the value of elements of Invoice.total_tax_amounts
+
+    Note that this is named with the prefix Djstripe to avoid potential
+    collision with a Stripe API object name.
+    """
+
+    invoice = models.ForeignKey(
+        "Invoice", on_delete=models.CASCADE, related_name="total_tax_amounts"
+    )
+
+    amount = StripeQuantumCurrencyAmountField(
+        help_text="The amount, in cents, of the tax."
+    )
+    inclusive = models.BooleanField(
+        help_text="Whether this tax amount is inclusive or exclusive."
+    )
+    tax_rate = models.ForeignKey(
+        "TaxRate",
+        on_delete=models.CASCADE,
+        help_text="The tax rate that was applied to get this tax amount.",
+    )
+
+    class Meta:
+        unique_together = ["invoice", "tax_rate"]
+
+
+class DjstripeUpcomingInvoiceTotalTaxAmount(models.Model):
+    """
+    As per DjstripeInvoiceTotalTaxAmount, except for UpcomingInvoice
+    """
+
+    invoice = models.ForeignKey(
+        # Don't define related_name since property is defined in UpcomingInvoice
+        "UpcomingInvoice",
+        on_delete=models.CASCADE,
+        related_name="+",
+    )
+
+    amount = StripeQuantumCurrencyAmountField(
+        help_text="The amount, in cents, of the tax."
+    )
+    inclusive = models.BooleanField(
+        help_text="Whether this tax amount is inclusive or exclusive."
+    )
+    tax_rate = models.ForeignKey(
+        "TaxRate",
+        on_delete=models.CASCADE,
+        help_text="The tax rate that was applied to get this tax amount.",
+    )
+
+    class Meta:
+        unique_together = ["invoice", "tax_rate"]
+
+
 class Coupon(StripeModel):
     id = StripeIdField(max_length=500)
     amount_off = StripeDecimalCurrencyAmountField(
@@ -124,33 +180,31 @@ class Coupon(StripeModel):
         )
 
 
-class Invoice(StripeModel):
+class BaseInvoice(StripeModel):
     """
-    Invoices are statements of what a customer owes for a particular billing
-    period, including subscriptions, invoice items, and any automatic proration
-    adjustments if necessary.
+    The abstract base model shared by Invoice and UpcomingInvoice
 
-    Once an invoice is created, payment is automatically attempted. Note that
-    the payment, while automatic, does not happen exactly at the time of invoice
-    creation. If you have configured webhooks, the invoice will wait until one
-    hour after the last webhook is successfully sent (or the last webhook times
-    out after failing).
-
-    Any customer credit on the account is applied before determining how much is
-    due for that invoice (the amount that will be actually charged).
-    If the amount due for the invoice is less than 50 cents (the minimum for a
-    charge), we add the amount to the customer's running account balance to be
-    added to the next invoice. If this amount is negative, it will act as a
-    credit to offset the next invoice. Note that the customer account balance
-    does not include unpaid invoices; it only includes balances that need to be
-    taken into account when calculating the amount due for the next invoice.
-
-    Stripe documentation: https://stripe.com/docs/api/python#invoices
+    Note:
+    Most fields are defined on BaseInvoice so they're available to both models.
+    ManyToManyFields are an exception, since UpcomingInvoice doesn't exist in the db.
     """
 
     stripe_class = stripe.Invoice
     stripe_dashboard_item_name = "invoices"
 
+    account_country = models.CharField(
+        max_length=2,
+        default="",
+        blank=True,
+        help_text="The country of the business associated with this invoice, "
+        "most often the business creating the invoice.",
+    )
+    account_name = models.TextField(
+        max_length=5000,
+        blank=True,
+        help_text="The public name of the business associated with this invoice, "
+        "most often the business creating the invoice.",
+    )
     amount_due = StripeDecimalCurrencyAmountField(
         help_text="Final amount due (as decimal) at this time for this invoice. "
         "If the invoice's total is smaller than the minimum charge amount, "
@@ -168,13 +222,9 @@ class Invoice(StripeModel):
         null=True,  # XXX: This is not nullable, but it's a new field
         help_text="The amount remaining, (as decimal), that is due.",
     )
-    auto_advance = models.NullBooleanField(
-        help_text="Controls whether Stripe will perform automatic collection of the "
-        "invoice. When false, the invoice’s state will not automatically "
-        "advance without an explicit action."
-    )
     application_fee_amount = StripeDecimalCurrencyAmountField(
         null=True,
+        blank=True,
         help_text="The fee (as decimal) that will be applied to the invoice and "
         "transferred to the application owner's "
         "Stripe account when the invoice is paid.",
@@ -194,7 +244,44 @@ class Invoice(StripeModel):
         "webhook, for example, so you might not want to display that invoice as "
         "unpaid to your users.",
     )
-    billing = StripeEnumField(
+    auto_advance = models.NullBooleanField(
+        help_text="Controls whether Stripe will perform automatic collection of the "
+        "invoice. When false, the invoice’s state will not automatically "
+        "advance without an explicit action."
+    )
+    billing_reason = StripeEnumField(
+        default="",
+        blank=True,
+        enum=enums.InvoiceBillingReason,
+        help_text="Indicates the reason why the invoice was created. "
+        "subscription_cycle indicates an invoice created by a subscription advancing "
+        "into a new period. subscription_create indicates an invoice created due to "
+        "creating a subscription. subscription_update indicates an invoice created due "
+        "to updating a subscription. subscription is set for all old invoices to "
+        "indicate either a change to a subscription or a period advancement. "
+        "manual is set for all invoices unrelated to a subscription "
+        "(for example: created via the invoice editor). The upcoming value is "
+        "reserved for simulated invoices per the upcoming invoice endpoint. "
+        "subscription_threshold indicates an invoice created due to a billing "
+        "threshold being reached.",
+    )
+    charge = models.OneToOneField(
+        "Charge",
+        on_delete=models.CASCADE,
+        null=True,
+        # we need to use the %(class)s placeholder to avoid related name
+        # clashes between Invoice and UpcomingInvoice
+        related_name="latest_%(class)s",
+        help_text="The latest charge generated for this invoice, if any.",
+    )
+    # deprecated, will be removed in 2.3
+    closed = models.NullBooleanField(
+        default=False,
+        help_text="Whether or not the invoice is still trying to collect payment."
+        " An invoice is closed if it's either paid or it has been marked closed. "
+        "A closed invoice will no longer attempt to collect payment.",
+    )
+    collection_method = StripeEnumField(
         enum=enums.InvoiceBilling,
         null=True,
         help_text=(
@@ -204,30 +291,74 @@ class Invoice(StripeModel):
             "with payment instructions."
         ),
     )
-    charge = models.OneToOneField(
-        "Charge",
-        on_delete=models.CASCADE,
-        null=True,
-        related_name="latest_invoice",
-        help_text="The latest charge generated for this invoice, if any.",
-    )
-    # deprecated, will be removed in 2.2
-    closed = models.NullBooleanField(
-        default=False,
-        help_text="Whether or not the invoice is still trying to collect payment."
-        " An invoice is closed if it's either paid or it has been marked closed. "
-        "A closed invoice will no longer attempt to collect payment.",
-    )
     currency = StripeCurrencyCodeField()
     customer = models.ForeignKey(
         "Customer",
         on_delete=models.CASCADE,
-        related_name="invoices",
+        # we need to use the %(class)s placeholder to avoid related name
+        # clashes between Invoice and UpcomingInvoice
+        related_name="%(class)ss",
         help_text="The customer associated with this invoice.",
     )
+    customer_address = JSONField(
+        null=True,
+        blank=True,
+        help_text="The customer’s address. Until the invoice is finalized, this "
+        "field will equal customer.address. Once the invoice is finalized, this field "
+        "will no longer be updated.",
+    )
+    customer_email = models.TextField(
+        max_length=5000,
+        blank=True,
+        help_text="The customer’s email. Until the invoice is finalized, this field "
+        "will equal customer.email. Once the invoice is finalized, this field will no "
+        "longer be updated.",
+    )
+    customer_name = models.TextField(
+        max_length=5000,
+        blank=True,
+        help_text="The customer’s name. Until the invoice is finalized, this field "
+        "will equal customer.name. Once the invoice is finalized, this field will no "
+        "longer be updated.",
+    )
+    customer_phone = models.TextField(
+        max_length=5000,
+        blank=True,
+        help_text="The customer’s phone number. Until the invoice is finalized, "
+        "this field will equal customer.phone_. Once the invoice is finalized, "
+        "this field will no longer be updated.",
+    )
+    customer_shipping = JSONField(
+        null=True,
+        blank=True,
+        help_text="The customer’s shipping information. Until the invoice is "
+        "finalized, this field will equal customer.shipping. Once the invoice is "
+        "finalized, this field will no longer be updated.",
+    )
+    customer_tax_exempt = StripeEnumField(
+        enum=enums.CustomerTaxExempt,
+        default="",
+        help_text="The customer’s tax exempt status. Until the invoice is finalized, "
+        "this field will equal customer.tax_exempt. Once the invoice is "
+        "finalized, this field will no longer be updated.",
+    )
+    default_payment_method = models.ForeignKey(
+        "PaymentMethod",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="+",
+        help_text="Default payment method for the invoice. It must belong to the "
+        "customer associated with the invoice. If not set, defaults to the "
+        "subscription’s default payment method, if any, or to the default payment "
+        "method in the customer’s invoice settings.",
+    )
+    # TODO: default_source
+    # Note: default_tax_rates is handled in the subclasses since it's a ManyToManyField
     # TODO: discount
     due_date = StripeDateTimeField(
         null=True,
+        blank=True,
         help_text=(
             "The date on which payment for this invoice is due. "
             "This value will be null for invoices where billing=charge_automatically."
@@ -238,7 +369,10 @@ class Invoice(StripeModel):
         help_text="Ending customer balance (in cents) after attempting to pay invoice. "
         "If the invoice has not been attempted yet, this will be null.",
     )
-    # deprecated, will be removed in 2.2
+    footer = models.TextField(
+        max_length=5000, blank=True, help_text="Footer displayed on the invoice."
+    )
+    # deprecated, will be removed in 2.3
     forgiven = models.NullBooleanField(
         default=False,
         help_text="Whether or not the invoice has been forgiven. "
@@ -264,7 +398,9 @@ class Invoice(StripeModel):
         ),
     )
     next_payment_attempt = StripeDateTimeField(
-        null=True, help_text="The time at which payment will next be attempted."
+        null=True,
+        blank=True,
+        help_text="The time at which payment will next be attempted.",
     )
     number = models.CharField(
         max_length=64,
@@ -298,9 +434,24 @@ class Invoice(StripeModel):
         help_text="Start of the usage period during which invoice items were "
         "added to this invoice."
     )
+    post_payment_credit_notes_amount = StripeQuantumCurrencyAmountField(
+        # This is not nullable, but it's a new field
+        null=True,
+        blank=True,
+        help_text="Total amount (in cents) of all post-payment credit notes issued "
+        "for this invoice.",
+    )
+    pre_payment_credit_notes_amount = StripeQuantumCurrencyAmountField(
+        # This is not nullable, but it's a new field
+        null=True,
+        blank=True,
+        help_text="Total amount (in cents) of all pre-payment credit notes issued "
+        "for this invoice.",
+    )
     receipt_number = models.CharField(
         max_length=64,
         null=True,
+        blank=True,
         help_text=(
             "This is the transaction number that appears on email receipts "
             "sent for this invoice."
@@ -322,11 +473,14 @@ class Invoice(StripeModel):
         "While most banks display this information consistently, "
         "some may display it incorrectly or not at all.",
     )
+    # TODO status
     status_transitions = JSONField(null=True, blank=True)
     subscription = models.ForeignKey(
         "Subscription",
         null=True,
-        related_name="invoices",
+        # we need to use the %(class)s placeholder to avoid related name
+        # clashes between Invoice and UpcomingInvoice
+        related_name="%(class)ss",
         on_delete=models.SET_NULL,
         help_text="The subscription that this invoice was prepared for, if any.",
     )
@@ -349,10 +503,17 @@ class Invoice(StripeModel):
     )
     tax_percent = StripePercentField(
         null=True,
+        blank=True,
         help_text="This percentage of the subtotal has been added to the total amount "
         "of the invoice, including invoice line items and discounts. "
         "This field is inherited from the subscription's ``tax_percent`` field, "
         "but can be changed before the invoice is paid. This field defaults to null.",
+    )
+    threshold_reason = JSONField(
+        null=True,
+        blank=True,
+        help_text="If billing_reason is set to subscription_threshold this returns "
+        "more information on which threshold rules triggered the invoice.",
     )
     total = StripeDecimalCurrencyAmountField("Total (as decimal) after discount.")
     webhooks_delivered_at = StripeDateTimeField(
@@ -365,7 +526,8 @@ class Invoice(StripeModel):
         ),
     )
 
-    class Meta(object):
+    class Meta:
+        abstract = True
         ordering = ["-created"]
 
     def __str__(self):
@@ -380,7 +542,7 @@ class Invoice(StripeModel):
         # see https://stripe.com/docs/upgrades#2018-11-08
 
         if "closed" not in data:
-            # TODO - drop this in 2.2, use auto_advance instead
+            # TODO - drop this in 2.3, use auto_advance instead
             # https://stripe.com/docs/billing/invoices/migrating-new-invoice-states#autoadvance
             if "auto_advance" in data:
                 data["closed"] = not data["auto_advance"]
@@ -388,7 +550,7 @@ class Invoice(StripeModel):
                 data["closed"] = False
 
         if "forgiven" not in data:
-            # TODO - drop this in 2.2, use status == "uncollectible" instead
+            # TODO - drop this in 2.3, use status == "uncollectible" instead
             if "status" in data:
                 data["forgiven"] = data["status"] == "uncollectible"
             else:
@@ -509,6 +671,16 @@ class Invoice(StripeModel):
 
     @property
     def status(self):
+        warnings.warn(
+            "Invoice.status will be redefined in djstripe 2.3, use "
+            "Invoice.legacy_status to keep the old values",
+            DeprecationWarning,
+        )
+
+        return self.legacy_status
+
+    @property
+    def legacy_status(self):
         """
         Attempts to label this invoice with a status.
         Note that an invoice can be more than one of the choices.
@@ -523,25 +695,14 @@ class Invoice(StripeModel):
             return self.STATUS_CLOSED
         return self.STATUS_OPEN
 
-    # deprecated, will be removed in 2.2
     @property
-    def application_fee(self):
+    def billing(self):
         warnings.warn(
-            "Invoice.application_fee has been renamed to .application_fee_amount. "
-            "This alias will be removed in djstripe 2.2",
+            "Invoice.billing has been renamed to .collection_method. "
+            "This alias will be removed in djstripe 2.3",
             DeprecationWarning,
         )
-        return self.application_fee_amount
-
-    # deprecated, will be removed in 2.2
-    @property
-    def date(self):
-        warnings.warn(
-            "Invoice.date has been removed, use .created instead."
-            "This alias will be removed in djstripe 2.2",
-            DeprecationWarning,
-        )
-        return self.created
+        return self.collection_method
 
     def get_stripe_dashboard_url(self):
         return self.customer.get_stripe_dashboard_url()
@@ -585,10 +746,72 @@ class Invoice(StripeModel):
             return self.subscription.plan
 
 
-class UpcomingInvoice(Invoice):
+class Invoice(BaseInvoice):
+    """
+    Invoices are statements of what a customer owes for a particular billing
+    period, including subscriptions, invoice items, and any automatic proration
+    adjustments if necessary.
+
+    Once an invoice is created, payment is automatically attempted. Note that
+    the payment, while automatic, does not happen exactly at the time of invoice
+    creation. If you have configured webhooks, the invoice will wait until one
+    hour after the last webhook is successfully sent (or the last webhook times
+    out after failing).
+
+    Any customer credit on the account is applied before determining how much is
+    due for that invoice (the amount that will be actually charged).
+    If the amount due for the invoice is less than 50 cents (the minimum for a
+    charge), we add the amount to the customer's running account balance to be
+    added to the next invoice. If this amount is negative, it will act as a
+    credit to offset the next invoice. Note that the customer account balance
+    does not include unpaid invoices; it only includes balances that need to be
+    taken into account when calculating the amount due for the next invoice.
+
+    Stripe documentation: https://stripe.com/docs/api/python#invoices
+    """
+
+    # Note:
+    # Most fields are defined on BaseInvoice so they're shared with UpcomingInvoice.
+    # ManyToManyFields are an exception, since UpcomingInvoice doesn't exist in the db.
+    default_tax_rates = models.ManyToManyField(
+        "TaxRate",
+        # explicitly specify the joining table name as though the joining model
+        # was defined with through="DjstripeInvoiceDefaultTaxRate"
+        db_table="djstripe_djstripeinvoicedefaulttaxrate",
+        related_name="+",
+        blank=True,
+        help_text="The tax rates applied to this invoice, if any.",
+    )
+
+    def _attach_objects_post_save_hook(self, cls, data, pending_relations=None):
+        super()._attach_objects_post_save_hook(
+            cls, data, pending_relations=pending_relations
+        )
+
+        self.default_tax_rates.set(
+            cls._stripe_object_to_default_tax_rates(target_cls=TaxRate, data=data)
+        )
+
+        cls._stripe_object_set_total_tax_amounts(
+            target_cls=DjstripeInvoiceTotalTaxAmount, data=data, instance=self
+        )
+
+
+class UpcomingInvoice(BaseInvoice):
+    """
+    The preview of an upcoming invoice - does not exist in the Django database.
+
+    See BaseInvoice.upcoming()
+
+    Logically it should be set abstract, but that doesn't quite work since we
+    do actually want to instantiate the model and use relations.
+    """
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._invoiceitems = []
+        self._default_tax_rates = []
+        self._total_tax_amounts = []
 
     def get_stripe_dashboard_url(self):
         return ""
@@ -598,6 +821,37 @@ class UpcomingInvoice(Invoice):
         self._invoiceitems = cls._stripe_object_to_invoice_items(
             target_cls=InvoiceItem, data=data, invoice=self
         )
+
+    def _attach_objects_post_save_hook(self, cls, data, pending_relations=None):
+        super()._attach_objects_post_save_hook(
+            cls, data, pending_relations=pending_relations
+        )
+
+        self._default_tax_rates = cls._stripe_object_to_default_tax_rates(
+            target_cls=TaxRate, data=data
+        )
+
+        total_tax_amounts = []
+
+        for tax_amount_data in data.get("total_tax_amounts", []):
+            tax_rate_data = tax_amount_data["tax_rate"]
+            if isinstance(tax_rate_data, str):
+                tax_rate_data = {"tax_rate": tax_rate_data}
+
+            tax_rate, _ = TaxRate._get_or_create_from_stripe_object(
+                tax_rate_data, field_name="tax_rate", refetch=True
+            )
+
+            tax_amount = DjstripeUpcomingInvoiceTotalTaxAmount(
+                invoice=self,
+                amount=tax_amount_data["amount"],
+                inclusive=tax_amount_data["inclusive"],
+                tax_rate=tax_rate,
+            )
+
+            total_tax_amounts.append(tax_amount)
+
+        self._total_tax_amounts = total_tax_amounts
 
     @property
     def invoiceitems(self):
@@ -614,6 +868,24 @@ class UpcomingInvoice(Invoice):
         """
 
         return QuerySetMock.from_iterable(InvoiceItem, self._invoiceitems)
+
+    @property
+    def default_tax_rates(self):
+        """
+        Gets the default tax rates associated with this upcoming invoice.
+        :return:
+        """
+        return QuerySetMock.from_iterable(TaxRate, self._default_tax_rates)
+
+    @property
+    def total_tax_amounts(self):
+        """
+        Gets the total tax amounts associated with this upcoming invoice.
+        :return:
+        """
+        return QuerySetMock.from_iterable(
+            DjstripeUpcomingInvoiceTotalTaxAmount, self._total_tax_amounts
+        )
 
     @property
     def id(self):
@@ -695,6 +967,17 @@ class InvoiceItem(StripeModel):
         "if any.",
     )
     # XXX: subscription_item
+    tax_rates = models.ManyToManyField(
+        "TaxRate",
+        # explicitly specify the joining table name as though the joining model
+        # was defined with through="DjstripeInvoiceItemTaxRate"
+        db_table="djstripe_djstripeinvoiceitemtaxrate",
+        related_name="+",
+        blank=True,
+        help_text="The tax rates which apply to this invoice item. When set, "
+        "the default_tax_rates on the invoice do not apply to this "
+        "invoice item.",
+    )
 
     @classmethod
     def _manipulate_stripe_object_hook(cls, data):
@@ -702,6 +985,17 @@ class InvoiceItem(StripeModel):
         data["period_end"] = data["period"]["end"]
 
         return data
+
+    def _attach_objects_post_save_hook(self, cls, data, pending_relations=None):
+        super()._attach_objects_post_save_hook(
+            cls, data, pending_relations=pending_relations
+        )
+
+        if self.pk:
+            # only call .set() on saved instance (ie don't on items of UpcomingInvoice)
+            self.tax_rates.set(
+                cls._stripe_object_to_tax_rates(target_cls=TaxRate, data=data)
+            )
 
     @classmethod
     def sync_from_stripe_data(cls, data):
@@ -1019,6 +1313,17 @@ class Subscription(StripeModel):
         "subscription. This value will be `null` for subscriptions where "
         "`billing=charge_automatically`.",
     )
+    default_tax_rates = models.ManyToManyField(
+        "TaxRate",
+        # explicitly specify the joining table name as though the joining model
+        # was defined with through="DjstripeSubscriptionDefaultTaxRate"
+        db_table="djstripe_djstripesubscriptiondefaulttaxrate",
+        related_name="+",
+        blank=True,
+        help_text="The tax rates that will apply to any subscription item "
+        "that does not have tax_rates set. Invoices created will have their "
+        "default_tax_rates populated from the subscription.",
+    )
     # TODO: discount
     ended_at = StripeDateTimeField(
         null=True,
@@ -1307,6 +1612,10 @@ class Subscription(StripeModel):
             target_cls=SubscriptionItem, data=data, subscription=self
         )
 
+        self.default_tax_rates.set(
+            cls._stripe_object_to_default_tax_rates(target_cls=TaxRate, data=data)
+        )
+
 
 class SubscriptionItem(StripeModel):
     """
@@ -1336,6 +1645,62 @@ class SubscriptionItem(StripeModel):
         on_delete=models.CASCADE,
         related_name="items",
         help_text="The subscription this subscription item belongs to.",
+    )
+    tax_rates = models.ManyToManyField(
+        "TaxRate",
+        # explicitly specify the joining table name as though the joining model
+        # was defined with through="DjstripeSubscriptionItemTaxRate"
+        db_table="djstripe_djstripesubscriptionitemtaxrate",
+        related_name="+",
+        blank=True,
+        help_text="The tax rates which apply to this subscription_item. When set, "
+        "the default_tax_rates on the subscription do not apply to this "
+        "subscription_item.",
+    )
+
+    def _attach_objects_post_save_hook(self, cls, data, pending_relations=None):
+        super()._attach_objects_post_save_hook(
+            cls, data, pending_relations=pending_relations
+        )
+
+        self.tax_rates.set(
+            cls._stripe_object_to_tax_rates(target_cls=TaxRate, data=data)
+        )
+
+
+class TaxRate(StripeModel):
+    """
+    Tax rates can be applied to invoices and subscriptions to collect tax.
+
+    Stripe documentation: https://stripe.com/docs/api/tax_rates
+    """
+
+    stripe_class = stripe.TaxRate
+
+    active = models.BooleanField(
+        default=True,
+        help_text="Defaults to true. When set to false, this tax rate cannot be "
+        "applied to objects in the API, but will still be applied to subscriptions "
+        "and invoices that already have it set.",
+    )
+    display_name = models.CharField(
+        max_length=50,
+        default="",
+        blank=True,
+        help_text="The display name of the tax rates as it will appear to your "
+        "customer on their receipt email, PDF, and the hosted invoice page.",
+    )
+    inclusive = models.BooleanField(
+        help_text="This specifies if the tax rate is inclusive or exclusive."
+    )
+    jurisdiction = models.CharField(
+        max_length=50,
+        default="",
+        blank=True,
+        help_text="The jurisdiction for the tax rate.",
+    )
+    percentage = StripePercentField(
+        help_text="This represents the tax rate percent out of 100."
     )
 
 

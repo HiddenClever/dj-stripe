@@ -59,9 +59,6 @@ class TestAccount(AssertStripeFksMixin, TestCase):
         self.assertEqual(account.settings["branding"]["icon"], account.branding_icon.id)
         self.assertEqual(account.settings["branding"]["logo"], account.branding_logo.id)
 
-        with self.assertWarns(DeprecationWarning):
-            self.assertEqual(account.business_logo.id, account.branding_icon.id)
-
         self.assertNotEqual(account.branding_logo.id, account.branding_icon.id)
 
         self.assert_fks(account, expected_blank_fks={})
@@ -91,6 +88,38 @@ class TestAccount(AssertStripeFksMixin, TestCase):
                 "djstripe.Account.branding_icon",
             },
         )
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize(
+    ("business_profile_update", "settings_dashboard_update", "expected_account_str"),
+    (
+        ({}, {}, "dj-stripe"),
+        ({}, {"display_name": "some display name"}, "some display name"),
+        ({"name": "some business name"}, {"display_name": ""}, "some business name"),
+        ({"name": ""}, {"display_name": ""}, "<id=acct_1032D82eZvKYlo2C>"),
+    ),
+)
+@patch("stripe.Account.retrieve", autospec=IS_STATICMETHOD_AUTOSPEC_SUPPORTED)
+@patch(
+    "stripe.FileUpload.retrieve",
+    return_value=deepcopy(FAKE_FILEUPLOAD_LOGO),
+    autospec=True,
+)
+def test_account_str(
+    fileupload_retrieve_mock,
+    account_retrieve_mock,
+    business_profile_update,
+    settings_dashboard_update,
+    expected_account_str,
+):
+    fake_account = deepcopy(FAKE_ACCOUNT)
+    fake_account["business_profile"].update(business_profile_update)
+    fake_account["settings"]["dashboard"].update(settings_dashboard_update)
+    account_retrieve_mock.return_value = fake_account
+    account = Account.get_default_account()
+
+    assert str(account) == expected_account_str
 
 
 @pytest.mark.parametrize(
