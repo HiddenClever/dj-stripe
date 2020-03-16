@@ -115,6 +115,8 @@ class Command(BaseCommand):
                 {"customer": stripe_customer.id, "type": "card"}
                 for stripe_customer in models.Customer.api_list()
             )
+        elif model is models.Subscription:
+            all_list_kwargs = [{'status': 'all'}]
         else:
             # one empty dict so we iterate once
             all_list_kwargs = [{}]
