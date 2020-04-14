@@ -3,10 +3,38 @@
 History
 =======
 
-2.2.3 (2020-02-25)
+2.3.0 (unreleased)
 ------------------
 
 - Changed ``JSONField`` dependency back to `jsonfield`_ from `jsonfield2`_ (see `Warning about safe uninstall of jsonfield2 on upgrade`_).
+- Dropped support for Django 2.1 (#1056).
+- Dropped support for python 3.5 (#1073).
+- Fixed handling of ``TaxRate`` events (#1094).
+- Fixed pagination issue in ``Invoice.sync_from_stripe_data`` (#1052).
+- Fixed pagination issues in ``Subscription`` & ``Charge`` ``.sync_from_stripe_data`` (#1054).
+- Tidyup ``_stripe_object_set_total_tax_amounts`` unique handling (#1139).
+- Dropped previously-deprecated ``Invoice`` fields (see https://stripe.com/docs/upgrades#2018-11-08 ):
+    - ``.closed``
+    - ``.forgiven``
+    - ``.billing`` (renamed to ``.collection_method``)
+- Dropped previously-deprecated ``enums.InvoiceStatus`` (#1020).
+- Deprecated the following fields - will be removed in 2.4 (#1087):
+    - ``Subscription.billing`` (use ``.collection_method`` instead)
+    - ``Subscription.start`` (use ``.start_date`` instead)
+    - ``Subscription.tax_percent`` (use ``.default_tax_rates`` instead)
+- Added ``Invoice.status`` and ``enums.InvoiceStatus`` (#1020).
+- Fixed str(Account) crash when settings or business_profile were NULL (#1104).
+- Added new ``Invoice`` fields (#1020, #1087):
+    - ``.discount``
+    - ``.default_source``
+    - ``.status``
+- Added new ``Subscription`` fields (#1087):
+    - ``.default_payment_method``
+    - ``.default_source``
+    - ``.next_pending_invoice_item_invoice``
+    - ``.pending_invoice_item_interval``
+    - ``.pending_update``
+    - ``.start_date``
 
 Warning about safe uninstall of jsonfield2 on upgrade
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

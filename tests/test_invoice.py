@@ -8,6 +8,7 @@ from django.contrib.auth import get_user_model
 from django.test.testcases import TestCase
 from stripe.error import InvalidRequestError
 
+from djstripe.enums import InvoiceStatus
 from djstripe.models import Invoice, Plan, Subscription, UpcomingInvoice
 from djstripe.settings import STRIPE_SECRET_KEY
 
@@ -25,7 +26,6 @@ from . import (
     FAKE_TAX_RATE_EXAMPLE_1_VAT,
     FAKE_TAX_RATE_EXAMPLE_2_SALES,
     FAKE_UPCOMING_INVOICE,
-    IS_ASSERT_CALLED_AUTOSPEC_SUPPORTED,
     IS_STATICMETHOD_AUTOSPEC_SUPPORTED,
     AssertStripeFksMixin,
     default_account,
@@ -49,9 +49,12 @@ class InvoiceTest(AssertStripeFksMixin, TestCase):
             "djstripe.Customer.coupon",
             "djstripe.Customer.default_payment_method",
             "djstripe.Invoice.default_payment_method",
+            "djstripe.Invoice.default_source",
             "djstripe.PaymentIntent.on_behalf_of",
             "djstripe.PaymentIntent.payment_method",
             "djstripe.PaymentIntent.upcominginvoice (related name)",
+            "djstripe.Subscription.default_payment_method",
+            "djstripe.Subscription.default_source",
             "djstripe.Subscription.pending_setup_intent",
         }
 
@@ -103,9 +106,6 @@ class InvoiceTest(AssertStripeFksMixin, TestCase):
         self.assertTrue(bool(invoice.account_country))
         self.assertTrue(bool(invoice.account_name))
         self.assertTrue(bool(invoice.collection_method))
-
-        with self.assertWarns(DeprecationWarning):
-            self.assertEqual(invoice.billing, invoice.collection_method)
 
         self.assertEqual(invoice.default_tax_rates.count(), 1)
         self.assertEqual(
@@ -338,6 +338,62 @@ class InvoiceTest(AssertStripeFksMixin, TestCase):
             # trigger model field validation (including enum value choices check)
             invoice.full_clean()
 
+    @patch(
+        "djstripe.models.Account.get_default_account",
+        autospec=IS_STATICMETHOD_AUTOSPEC_SUPPORTED,
+    )
+    @patch(
+        "stripe.BalanceTransaction.retrieve",
+        return_value=deepcopy(FAKE_BALANCE_TRANSACTION),
+        autospec=True,
+    )
+    @patch(
+        "stripe.Subscription.retrieve",
+        return_value=deepcopy(FAKE_SUBSCRIPTION),
+        autospec=True,
+    )
+    @patch("stripe.Charge.retrieve", return_value=deepcopy(FAKE_CHARGE), autospec=True)
+    @patch(
+        "stripe.PaymentMethod.retrieve",
+        return_value=deepcopy(FAKE_CARD_AS_PAYMENT_METHOD),
+        autospec=True,
+    )
+    @patch(
+        "stripe.PaymentIntent.retrieve",
+        return_value=deepcopy(FAKE_PAYMENT_INTENT_I),
+        autospec=True,
+    )
+    @patch(
+        "stripe.Product.retrieve", return_value=deepcopy(FAKE_PRODUCT), autospec=True
+    )
+    def test_invoice_status_enum(
+        self,
+        product_retrieve_mock,
+        payment_intent_retrieve_mock,
+        paymentmethod_card_retrieve_mock,
+        charge_retrieve_mock,
+        subscription_retrieve_mock,
+        balance_transaction_retrieve_mock,
+        default_account_mock,
+    ):
+        default_account_mock.return_value = self.account
+        fake_invoice = deepcopy(FAKE_INVOICE)
+
+        for status in (
+            "draft",
+            "open",
+            "paid",
+            "uncollectible",
+            "void",
+        ):
+            fake_invoice["status"] = status
+
+            invoice = Invoice.sync_from_stripe_data(fake_invoice)
+            self.assertEqual(invoice.status, status)
+
+            # trigger model field validation (including enum value choices check)
+            invoice.full_clean()
+
     @patch("stripe.Invoice.retrieve", autospec=True)
     @patch(
         "djstripe.models.Account.get_default_account",
@@ -381,7 +437,8 @@ class InvoiceTest(AssertStripeFksMixin, TestCase):
         default_account_mock.return_value = self.account
 
         fake_invoice = deepcopy(FAKE_INVOICE)
-        fake_invoice.update({"paid": False, "closed": False})
+        fake_invoice.update({"paid": False, "status": "open"})
+        fake_invoice.update({"auto_advance": True})
         invoice_retrieve_mock.return_value = fake_invoice
 
         invoice = Invoice.sync_from_stripe_data(fake_invoice)
@@ -475,7 +532,7 @@ class InvoiceTest(AssertStripeFksMixin, TestCase):
     @patch(
         "stripe.Product.retrieve", return_value=deepcopy(FAKE_PRODUCT), autospec=True
     )
-    def test_status_paid(
+    def test_status_draft(
         self,
         product_retrieve_mock,
         paymentmethod_card_retrieve_mock,
@@ -487,12 +544,11 @@ class InvoiceTest(AssertStripeFksMixin, TestCase):
     ):
         default_account_mock.return_value = self.account
 
-        invoice = Invoice.sync_from_stripe_data(deepcopy(FAKE_INVOICE))
+        invoice_data = deepcopy(FAKE_INVOICE)
+        invoice_data.update({"paid": False, "status": "draft"})
+        invoice = Invoice.sync_from_stripe_data(invoice_data)
 
-        with self.assertWarns(DeprecationWarning):
-            self.assertEqual(Invoice.STATUS_PAID, invoice.status)
-
-        self.assertEqual(Invoice.STATUS_PAID, invoice.legacy_status)
+        self.assertEqual(InvoiceStatus.draft, invoice.status)
 
         self.assert_fks(invoice, expected_blank_fks=self.default_expected_blank_fks)
 
@@ -537,13 +593,10 @@ class InvoiceTest(AssertStripeFksMixin, TestCase):
         default_account_mock.return_value = self.account
 
         invoice_data = deepcopy(FAKE_INVOICE)
-        invoice_data.update({"paid": False, "closed": False})
+        invoice_data.update({"paid": False, "status": "open"})
         invoice = Invoice.sync_from_stripe_data(invoice_data)
 
-        with self.assertWarns(DeprecationWarning):
-            self.assertEqual(Invoice.STATUS_OPEN, invoice.status)
-
-        self.assertEqual(Invoice.STATUS_OPEN, invoice.legacy_status)
+        self.assertEqual(InvoiceStatus.open, invoice.status)
 
         self.assert_fks(invoice, expected_blank_fks=self.default_expected_blank_fks)
 
@@ -575,7 +628,7 @@ class InvoiceTest(AssertStripeFksMixin, TestCase):
     @patch(
         "stripe.Product.retrieve", return_value=deepcopy(FAKE_PRODUCT), autospec=True
     )
-    def test_status_forgiven(
+    def test_status_paid(
         self,
         product_retrieve_mock,
         paymentmethod_card_retrieve_mock,
@@ -587,14 +640,9 @@ class InvoiceTest(AssertStripeFksMixin, TestCase):
     ):
         default_account_mock.return_value = self.account
 
-        invoice_data = deepcopy(FAKE_INVOICE)
-        invoice_data.update({"paid": False, "closed": False, "forgiven": True})
-        invoice = Invoice.sync_from_stripe_data(invoice_data)
+        invoice = Invoice.sync_from_stripe_data(deepcopy(FAKE_INVOICE))
 
-        with self.assertWarns(DeprecationWarning):
-            self.assertEqual(Invoice.STATUS_FORGIVEN, invoice.status)
-
-        self.assertEqual(Invoice.STATUS_FORGIVEN, invoice.legacy_status)
+        self.assertEqual(InvoiceStatus.paid, invoice.status)
 
         self.assert_fks(invoice, expected_blank_fks=self.default_expected_blank_fks)
 
@@ -626,112 +674,7 @@ class InvoiceTest(AssertStripeFksMixin, TestCase):
     @patch(
         "stripe.Product.retrieve", return_value=deepcopy(FAKE_PRODUCT), autospec=True
     )
-    def test_status_forgiven_deprecated(
-        self,
-        product_retrieve_mock,
-        paymentmethod_card_retrieve_mock,
-        payment_intent_retrieve_mock,
-        charge_retrieve_mock,
-        subscription_retrieve_mock,
-        balance_transaction_retrieve_mock,
-        default_account_mock,
-    ):
-        # forgiven parameter deprecated in API 2018-11-08
-        # see https://stripe.com/docs/upgrades#2018-11-08
-        default_account_mock.return_value = self.account
-
-        invoice_data = deepcopy(FAKE_INVOICE)
-        invoice_data.update({"paid": False, "closed": False})
-        invoice_data.pop("forgiven", None)  # TODO remove
-        invoice_data["status"] = "uncollectible"
-        invoice = Invoice.sync_from_stripe_data(invoice_data)
-
-        with self.assertWarns(DeprecationWarning):
-            self.assertEqual(Invoice.STATUS_FORGIVEN, invoice.status)
-
-        self.assertEqual(Invoice.STATUS_FORGIVEN, invoice.legacy_status)
-
-    @patch(
-        "djstripe.models.Account.get_default_account",
-        autospec=IS_STATICMETHOD_AUTOSPEC_SUPPORTED,
-    )
-    @patch(
-        "stripe.BalanceTransaction.retrieve",
-        return_value=deepcopy(FAKE_BALANCE_TRANSACTION),
-        autospec=True,
-    )
-    @patch(
-        "stripe.Subscription.retrieve",
-        return_value=deepcopy(FAKE_SUBSCRIPTION),
-        autospec=True,
-    )
-    @patch("stripe.Charge.retrieve", return_value=deepcopy(FAKE_CHARGE), autospec=True)
-    @patch(
-        "stripe.PaymentIntent.retrieve",
-        return_value=deepcopy(FAKE_PAYMENT_INTENT_I),
-        autospec=True,
-    )
-    @patch(
-        "stripe.PaymentMethod.retrieve",
-        return_value=deepcopy(FAKE_CARD_AS_PAYMENT_METHOD),
-        autospec=True,
-    )
-    @patch(
-        "stripe.Product.retrieve", return_value=deepcopy(FAKE_PRODUCT), autospec=True
-    )
-    def test_status_forgiven_default(
-        self,
-        product_retrieve_mock,
-        paymentmethod_card_retrieve_mock,
-        payment_intent_retrieve_mock,
-        charge_retrieve_mock,
-        subscription_retrieve_mock,
-        balance_transaction_retrieve_mock,
-        default_account_mock,
-    ):
-        # forgiven parameter deprecated in API 2018-11-08
-        # see https://stripe.com/docs/upgrades#2018-11-08
-        default_account_mock.return_value = self.account
-
-        invoice_data = deepcopy(FAKE_INVOICE)
-        invoice_data.update({"paid": False, "closed": False})
-        invoice_data.pop("forgiven", None)  # TODO remove
-        invoice = Invoice.sync_from_stripe_data(invoice_data)
-
-        with self.assertWarns(DeprecationWarning):
-            self.assertEqual(Invoice.STATUS_OPEN, invoice.status)
-
-        self.assertEqual(Invoice.STATUS_OPEN, invoice.legacy_status)
-
-    @patch(
-        "djstripe.models.Account.get_default_account",
-        autospec=IS_STATICMETHOD_AUTOSPEC_SUPPORTED,
-    )
-    @patch(
-        "stripe.BalanceTransaction.retrieve",
-        return_value=deepcopy(FAKE_BALANCE_TRANSACTION),
-        autospec=True,
-    )
-    @patch(
-        "stripe.Subscription.retrieve",
-        return_value=deepcopy(FAKE_SUBSCRIPTION),
-        autospec=True,
-    )
-    @patch("stripe.Charge.retrieve", return_value=deepcopy(FAKE_CHARGE), autospec=True)
-    @patch(
-        "stripe.PaymentIntent.retrieve",
-        return_value=deepcopy(FAKE_PAYMENT_INTENT_I),
-        autospec=True,
-    )
-    @patch(
-        "stripe.PaymentMethod.retrieve",
-        return_value=deepcopy(FAKE_CARD_AS_PAYMENT_METHOD),
-        autospec=True,
-    )
-    @patch(
-        "stripe.Product.retrieve", return_value=deepcopy(FAKE_PRODUCT), autospec=True
-    )
-    def test_status_closed(
+    def test_status_uncollectible(
         self,
         product_retrieve_mock,
         paymentmethod_card_retrieve_mock,
@@ -744,13 +687,10 @@ class InvoiceTest(AssertStripeFksMixin, TestCase):
         default_account_mock.return_value = self.account
 
         invoice_data = deepcopy(FAKE_INVOICE)
-        invoice_data.update({"paid": False})
+        invoice_data.update({"paid": False, "status": "uncollectible"})
         invoice = Invoice.sync_from_stripe_data(invoice_data)
 
-        with self.assertWarns(DeprecationWarning):
-            self.assertEqual(Invoice.STATUS_CLOSED, invoice.status)
-
-        self.assertEqual(Invoice.STATUS_CLOSED, invoice.legacy_status)
+        self.assertEqual(InvoiceStatus.uncollectible, invoice.status)
 
         self.assert_fks(invoice, expected_blank_fks=self.default_expected_blank_fks)
 
@@ -782,7 +722,7 @@ class InvoiceTest(AssertStripeFksMixin, TestCase):
     @patch(
         "stripe.Product.retrieve", return_value=deepcopy(FAKE_PRODUCT), autospec=True
     )
-    def test_status_closed_deprecated(
+    def test_status_void(
         self,
         product_retrieve_mock,
         paymentmethod_card_retrieve_mock,
@@ -792,77 +732,15 @@ class InvoiceTest(AssertStripeFksMixin, TestCase):
         balance_transaction_retrieve_mock,
         default_account_mock,
     ):
-        # closed parameter deprecated in API 2018-11-08
-        # see https://stripe.com/docs/upgrades#2018-11-08
         default_account_mock.return_value = self.account
 
         invoice_data = deepcopy(FAKE_INVOICE)
-        invoice_data.update({"paid": False})
-        invoice_data["auto_advance"] = False
-
+        invoice_data.update({"paid": False, "status": "void"})
         invoice = Invoice.sync_from_stripe_data(invoice_data)
 
-        with self.assertWarns(DeprecationWarning):
-            self.assertEqual(Invoice.STATUS_CLOSED, invoice.status)
+        self.assertEqual(InvoiceStatus.void, invoice.status)
 
-        self.assertEqual(Invoice.STATUS_CLOSED, invoice.legacy_status)
-
-        self.assertEqual(invoice.auto_advance, invoice_data["auto_advance"])
-
-    @patch(
-        "djstripe.models.Account.get_default_account",
-        autospec=IS_STATICMETHOD_AUTOSPEC_SUPPORTED,
-    )
-    @patch(
-        "stripe.BalanceTransaction.retrieve",
-        return_value=deepcopy(FAKE_BALANCE_TRANSACTION),
-        autospec=True,
-    )
-    @patch(
-        "stripe.Subscription.retrieve",
-        return_value=deepcopy(FAKE_SUBSCRIPTION),
-        autospec=True,
-    )
-    @patch("stripe.Charge.retrieve", return_value=deepcopy(FAKE_CHARGE), autospec=True)
-    @patch(
-        "stripe.PaymentIntent.retrieve",
-        return_value=deepcopy(FAKE_PAYMENT_INTENT_I),
-        autospec=True,
-    )
-    @patch(
-        "stripe.PaymentMethod.retrieve",
-        return_value=deepcopy(FAKE_CARD_AS_PAYMENT_METHOD),
-        autospec=True,
-    )
-    @patch(
-        "stripe.Product.retrieve", return_value=deepcopy(FAKE_PRODUCT), autospec=True
-    )
-    def test_status_closed_default(
-        self,
-        product_retrieve_mock,
-        paymentmethod_card_retrieve_mock,
-        payment_intent_retrieve_mock,
-        charge_retrieve_mock,
-        subscription_retrieve_mock,
-        balance_transaction_retrieve_mock,
-        default_account_mock,
-    ):
-        # closed parameter deprecated in API 2018-11-08
-        # see https://stripe.com/docs/upgrades#2018-11-08
-        default_account_mock.return_value = self.account
-
-        invoice_data = deepcopy(FAKE_INVOICE)
-        invoice_data.update({"paid": False})
-        invoice_data.pop("auto_advance")
-        invoice_data.pop("closed", None)  # TODO remove
-        invoice_data.pop("status")
-
-        invoice = Invoice.sync_from_stripe_data(invoice_data)
-
-        with self.assertWarns(DeprecationWarning):
-            self.assertEqual(Invoice.STATUS_OPEN, invoice.status)
-
-        self.assertEqual(Invoice.STATUS_OPEN, invoice.legacy_status)
+        self.assert_fks(invoice, expected_blank_fks=self.default_expected_blank_fks)
 
     @patch(
         "djstripe.models.Account.get_default_account",
@@ -879,11 +757,9 @@ class InvoiceTest(AssertStripeFksMixin, TestCase):
         autospec=True,
     )
     @patch(
-        "stripe.Plan.retrieve",
-        return_value=deepcopy(FAKE_PLAN),
-        autospec=IS_ASSERT_CALLED_AUTOSPEC_SUPPORTED,
+        "stripe.Plan.retrieve", return_value=deepcopy(FAKE_PLAN), autospec=True,
     )
-    @patch("stripe.Subscription.retrieve", autospec=IS_ASSERT_CALLED_AUTOSPEC_SUPPORTED)
+    @patch("stripe.Subscription.retrieve", autospec=True)
     @patch("stripe.Charge.retrieve", return_value=deepcopy(FAKE_CHARGE), autospec=True)
     @patch(
         "stripe.PaymentIntent.retrieve",
@@ -1223,9 +1099,7 @@ class InvoiceTest(AssertStripeFksMixin, TestCase):
         )
 
     @patch(
-        "stripe.Plan.retrieve",
-        return_value=deepcopy(FAKE_PLAN),
-        autospec=IS_ASSERT_CALLED_AUTOSPEC_SUPPORTED,
+        "stripe.Plan.retrieve", return_value=deepcopy(FAKE_PLAN), autospec=True,
     )
     @patch(
         "stripe.Subscription.retrieve",
@@ -1290,7 +1164,7 @@ class InvoiceTest(AssertStripeFksMixin, TestCase):
         )
         self.assertEqual(first_tax_amount.amount, 261)
 
-    @patch("stripe.Plan.retrieve", autospec=IS_ASSERT_CALLED_AUTOSPEC_SUPPORTED)
+    @patch("stripe.Plan.retrieve", autospec=True)
     @patch(
         "stripe.Product.retrieve", return_value=deepcopy(FAKE_PRODUCT), autospec=True
     )
@@ -1326,7 +1200,7 @@ class InvoiceTest(AssertStripeFksMixin, TestCase):
         self.assertIsNotNone(invoice.plan)
         self.assertEqual(FAKE_PLAN["id"], invoice.plan.id)
 
-    @patch("stripe.Plan.retrieve", autospec=IS_ASSERT_CALLED_AUTOSPEC_SUPPORTED)
+    @patch("stripe.Plan.retrieve", autospec=True)
     @patch(
         "stripe.Subscription.retrieve",
         return_value=deepcopy(FAKE_SUBSCRIPTION),

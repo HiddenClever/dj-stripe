@@ -628,9 +628,6 @@ class StripeModel(models.Model):
         Retrieves TaxRates for a SubscriptionItem or InvoiceItem
         :param target_cls:
         :param data:
-        :param instance:
-        :type instance: Union[djstripe.models.InvoiceItem,
-                              djstripe.models.SubscriptionItem]
         :return:
         """
         tax_rates = []
@@ -667,9 +664,11 @@ class StripeModel(models.Model):
             )
             tax_amount, _ = target_cls.objects.update_or_create(
                 invoice=instance,
-                amount=tax_amount_data["amount"],
-                inclusive=tax_amount_data["inclusive"],
                 tax_rate=tax_rate,
+                defaults={
+                    "amount": tax_amount_data["amount"],
+                    "inclusive": tax_amount_data["inclusive"],
+                },
             )
 
             pks.append(tax_amount.pk)
@@ -699,7 +698,7 @@ class StripeModel(models.Model):
             return []
 
         invoiceitems = []
-        for line in lines.get("data", []):
+        for line in lines.auto_paging_iter():
             if invoice.id:
                 save = True
                 line.setdefault("invoice", invoice.id)
@@ -748,7 +747,7 @@ class StripeModel(models.Model):
             return []
 
         subscriptionitems = []
-        for item_data in items.get("data", []):
+        for item_data in items.auto_paging_iter():
             item, _ = target_cls._get_or_create_from_stripe_object(
                 item_data, refetch=False
             )
@@ -774,7 +773,7 @@ class StripeModel(models.Model):
             return []
 
         refund_objs = []
-        for refund_data in refunds.get("data", []):
+        for refund_data in refunds.auto_paging_iter():
             item, _ = target_cls._get_or_create_from_stripe_object(
                 refund_data, refetch=False
             )
